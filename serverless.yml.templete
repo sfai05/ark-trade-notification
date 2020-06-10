@@ -1,0 +1,32 @@
+service: ark-trades-notification
+
+provider:
+  name: google
+  stage: dev
+  runtime: python37
+  region: us-central1
+  project: <GCP_PROJECT_ID>
+  credentials: <GCP_PROJECT_KEYFILE>
+  environment:
+    GCS_BUCKET: '<GCS_BUCKET>'
+    BOT_TOKEN: '<TELEGRAM_BOT_TOKEN>'
+    BOT_CHATID: '<TELEGRAM_BOT_CHATID>'
+
+plugins:
+  - serverless-google-cloudfunctions
+
+# needs more granular excluding in production as only the serverless provider npm
+# package should be excluded (and not the whole node_modules directory)
+package:
+  exclude:
+    - node_modules/**
+    - .gitignore
+    - .git/**
+
+functions:
+  ark-trades-notification:
+   handler: main
+   events:
+    - event:
+        eventType: providers/cloud.pubsub/eventTypes/topic.publish
+        resource: 'projects/${self:provider.project, ""}/topics/hourly-trigger'
