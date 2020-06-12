@@ -9,10 +9,12 @@ from datetime import datetime
 from google.cloud import storage
 
 ARK_DOMAIN = 'https://www.ark-funds.com/auto/trades/'
-ARK_FILES = {'ARKG': 'ARK_ARKG_Trades.xls', 'ARKK': 'ARK_ARKK_Trades.xls', 'ARKQ': 'ARK_ARKQ_Trades.xls', 'ARKW': 'ARK_ARKW_Trades.xls'}
+ARK_FILES = {'ARKG': 'ARK_ARKG_Trades.xls', 'ARKK': 'ARK_ARKK_Trades.xls', 'ARKQ': 'ARK_ARKQ_Trades.xls', 'ARKW': 'ARK_ARKW_Trades.xls', 'ARKF': 'ARK_ARKF_Trades.xls'}
 GCS_BUCKET = os.environ.get('GCS_BUCKET', 'bucket-for-store-history')
 BOT_TOKEN = os.environ.get('BOT_TOKEN', 'telegram-bot-token')
 BOT_CHATID = os.environ.get('BOT_CHATID', 'telegram-dest-group-id')
+FINNHUB_TOKEN = os.environ.get('FINNHUB_TOKEN', 'token-of-finnhub')
+TMP_FOLDER = os.environ.get('TMP_FOLDER', '/tmp/')
 
 
 def md5sum(filename):
@@ -23,13 +25,19 @@ def md5sum(filename):
     return d.hexdigest()
 
 
-def download_from_remote(url, file_name):
+def download_from_remote(url, file_path):
     # open in binary mode
-    with open(file_name, "wb") as file:
+    with open(file_path, "wb") as file:
         # get request
         response = requests.get(url)
-        # write to file
-        file.write(response.content)
+        print( '%s : %s' % ( url, response.status_code))
+        if response.status_code == 200:
+            # write to file
+            file.write(response.content)
+            print('%s downloaded' % file_path )
+            return True
+        else:
+            return False
 
 
 def generate_message_from_file(src):
@@ -42,7 +50,11 @@ def generate_message_from_file(src):
     message = ['%s %s' % (df.iloc[0][1], df.iloc[0][0])]
     for index, row in df.iterrows():
         symbol = row[4]
-        price = requests.get('https://finnhub.io/api/v1/quote?symbol=%s&token=brfiks7rh5raper7b7eg' % symbol).json()['o']
+        response = requests.get('https://finnhub.io/api/v1/quote?symbol=%s&token=%s' % (symbol, FINNHUB_TOKEN))
+        if response.status_code == 200:
+            price = response.json()['o']
+        else:
+            price = 0
         message.append('%s : <b>%s</b> %s ( <pre>%s</pre> ) %s @ $%s (USD $%s)' % (row[2], row[3], urllib.parse.quote(row[6]), row[4], row[7], price,
                                                                                    "{:,}".format(round(float(row[7]) * float(price)))))
 
@@ -58,9 +70,14 @@ def check_trade_list():
         headers={
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/35.0.1916.47 Safari/537.36'
         })
-    remote = urllib.request.urlopen(req)
-    message = remote.read()
-    print(message)
+    try:
+        remote = urllib.request.urlopen(req)
+        message = remote.read()
+        print(message)
+    except:
+        print('Error when getting update')
+        message = 'FAILED'
+
     if message == NO_UPDATE:
         return False
     else:
@@ -70,14 +87,14 @@ def check_trade_list():
 def blob_exists(bucket_name, filename):
     client = storage.Client()
     bucket = client.get_bucket(bucket_name)
-    blob = bucket.blob(filename)
+    blob = bucket.blob(filename.replace(TMP_FOLDER, ''))
     return blob.exists()
 
 
 def upload_blob(bucket_name, filename):
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
-    blob = bucket.blob(filename)
+    blob = bucket.blob(filename.replace(TMP_FOLDER, ''))
     return blob.upload_from_filename(filename)
 
 
@@ -94,23 +111,32 @@ def main(data, context):
     renamed_files = []
     if check_trade_list() is not False:
         for symbol, ark_file in ARK_FILES.items():
-            download_from_remote('%s%s' % (ARK_DOMAIN, ark_file), ark_file)
+            file_path = '%s%s'%(TMP_FOLDER, ark_file)
+            downloaded = download_from_remote('%s%s' % (ARK_DOMAIN, ark_file), file_path)
             #  Reanme the file
-            md5 = md5sum(ark_file)
-            refile_name = '%s-%s-%s.xls' % (ark_file.replace('.xls', ''), datetime.today().strftime('%Y%m%d'), md5)
-            renamed_files.append(refile_name)
-            os.rename(ark_file, refile_name)
+            if downloaded is True:
+                md5 = md5sum(file_path)
+                refile_name = '%s-%s-%s.xls' % (file_path.replace('.xls', ''), datetime.today().strftime('%Y%m%d'), md5)
+                renamed_files.append(refile_name)
+                os.rename(file_path, refile_name)
+                print('%s renamed to %s' % (file_path, refile_name))
+            else:
+                print('Skip this file : %s' % file_path)
     else:
         print('No update so far')
 
     if len(renamed_files) > 0:
         messages = []
         for renamed_file in renamed_files:
+            print('Check exist for %s' % renamed_file)
             is_exist = blob_exists(GCS_BUCKET, renamed_file)
             if is_exist is False:
                 # Upload the file, process the message
                 upload_blob(GCS_BUCKET, renamed_file)
+                print('Start generating message...')
                 messages.append(generate_message_from_file(renamed_file))
+            else:
+                print('File already exists!')
         for message in messages:
             res = telegram_bot_sendtext("\n".join(message))
             print(res)
