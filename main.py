@@ -5,7 +5,7 @@ import requests
 import olefile
 import pandas as pd
 from functools import partial
-from datetime import datetime
+from datetime import datetime, timedelta
 from google.cloud import storage
 
 ARK_DOMAIN = 'https://www.ark-funds.com/auto/trades/'
@@ -13,7 +13,7 @@ ARK_FILES = {'ARKG': 'ARK_ARKG_Trades.xls', 'ARKK': 'ARK_ARKK_Trades.xls', 'ARKQ
 GCS_BUCKET = os.environ.get('GCS_BUCKET', 'bucket-for-store-history')
 BOT_TOKEN = os.environ.get('BOT_TOKEN', 'telegram-bot-token')
 BOT_CHATID = os.environ.get('BOT_CHATID', 'telegram-dest-group-id')
-FINNHUB_TOKEN = os.environ.get('FINNHUB_TOKEN', 'token-of-finnhub')
+FINNHUB_TOKEN = os.environ.get('FINNHUB_TOKEN', 'Finnhub Stock API: https://finnhub.io/')
 TMP_FOLDER = os.environ.get('TMP_FOLDER', '/tmp/')
 
 
@@ -51,10 +51,15 @@ def generate_message_from_file(src):
     for index, row in df.iterrows():
         symbol = row[4]
         response = requests.get('https://finnhub.io/api/v1/quote?symbol=%s&token=%s' % (symbol, FINNHUB_TOKEN))
+        price = 0
         if response.status_code == 200:
-            price = response.json()['o']
+            finnhub_res = response.json()
+            if type(finnhub_res) == type(dict()) and 'o' in finnhub_res:
+                price = finnhub_res['o']
+            else:
+                print('Cannot found open price in finnhub api')
         else:
-            price = 0
+            print('Finnhub response error : %s' % response.status_code)
         message.append('%s : <b>%s</b> %s ( <pre>%s</pre> ) %s @ $%s (USD $%s)' % (row[2], row[3], urllib.parse.quote(row[6]), row[4], row[7], price,
                                                                                    "{:,}".format(round(float(row[7]) * float(price)))))
 
@@ -116,7 +121,8 @@ def main(data, context):
             #  Reanme the file
             if downloaded is True:
                 md5 = md5sum(file_path)
-                refile_name = '%s-%s-%s.xls' % (file_path.replace('.xls', ''), datetime.today().strftime('%Y%m%d'), md5)
+                hk_date = datetime.now() + timedelta(hours=8)
+                refile_name = '%s-%s-%s.xls' % (file_path.replace('.xls', ''), hk_date.strftime('%Y%m%d'), md5)
                 renamed_files.append(refile_name)
                 os.rename(file_path, refile_name)
                 print('%s renamed to %s' % (file_path, refile_name))
@@ -138,6 +144,5 @@ def main(data, context):
             else:
                 print('File already exists!')
         for message in messages:
-            res = telegram_bot_sendtext("\n".join(message))
-            print(res)
+            telegram_bot_sendtext("\n".join(message))
     return True
